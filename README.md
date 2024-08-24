@@ -627,6 +627,8 @@ void Router::createSampleRouter()
 
 ![image-20240813223635159](F:\project\zero-one-hrsys-1.0.0\hr-cpp\imgs\image-20240813223635159.png)
 
+# MVC架构
+
 ## `Domain`
 
 #### 为什么好多model都要::`Wrapper`?
@@ -1112,6 +1114,8 @@ public:
 
 这个过程展示了一个完整的数据流，从前端到后端再返回前端，涵盖了不同层之间的数据转换和交互。
 
+# 相关技术
+
 ## 文件存储
 
 在本次项目中,文件存储在了`FastDFS`服务器中,采用`Nginx`代理访问
@@ -1321,11 +1325,90 @@ void TestFastDFS::testDFS()
 
 ## 报表
 
-注意连接excel静态库
+### 静态库连接
 
-弄清什么时候转码,什么时候不转码
+excel的静态库 -> `xlntd.lib`(debug模式下的) , `xlnt.lib`(release模式下)
 
-### 导入流程
+在链接器的输入选项中添加
+
+### 测试代码
+
+> TestExcel.cpp
+
+```cpp
+//	注意：为了保证再Linux平台不乱码，需要保证本源码文件的编码为 UTF8 BOM 编码格式 即带签名的模式
+void TestExcel::testExcel() {
+
+	//	创建测试数据
+	vector<vector<string>> data;
+	stringstream ss;
+	for (int i = 1; i <= 10; i++) {
+		vector<string> row;
+		for (int j = 1; j <= 5; j++) {
+			ss.clear();
+			//	注意： 因为xlnt 不能存储非utf8编码的字符，所以中文字需要转换编码
+			ss
+				<< CharsetConvertHepler::ansiToUtf8("单元格坐标：（") << i
+				<< CharsetConvertHepler::ansiToUtf8(",") << j << ")";
+			row.push_back(ss.str());
+			ss.str("");
+		}
+		data.push_back(row);
+	}
+
+	//	定义保存数据位置和页签名称
+	//	注意：文件名称和文件路径不能出现中文
+	string fileName = "./public/excel/1.xlsx";
+	//	注意：因为xlnt不能存储非utf8编码的字符，所以中文字需要转换编码
+	string sheetName = CharsetConvertHepler::ansiToUtf8("数据表1");
+
+	//	保存到文件
+	ExcelComponent excel;
+	excel.writeVectorToFile(fileName, sheetName, data);
+
+	//	从文件中读取 -- 此时从文件读出的就是utf8,但如果要在控制台打印就要转回ansi(控制台编码集太久了不支持)
+	auto readData = excel.readIntoVector(fileName, sheetName);
+	for (auto row : readData) {
+		for (auto cellVal : row) {
+			/*注意，这里使用了编码转换，目的是为了在控制台打印不显示乱码，如果是将数据写入数据库，
+			那就不需要转换编码，从文件中读出来是什么数据就写入什么数据*/
+			cout << CharsetConvertHepler::utf8ToAnsi(cellVal);
+			cout << CharsetConvertHepler::utf8ToAnsi(",");
+		}
+		cout << endl;
+	}
+
+
+	//	测试 创建 第二个页签
+	sheetName = CharsetConvertHepler::ansiToUtf8("数据表2");
+	excel.writeVectorToFile(fileName, sheetName, data);
+
+	//	测试 覆盖 第一个页签
+	sheetName = CharsetConvertHepler::ansiToUtf8("数据表1");
+	data.insert(data.begin(), {
+		CharsetConvertHepler::ansiToUtf8("表头1"),
+		CharsetConvertHepler::ansiToUtf8("表头2"),
+		CharsetConvertHepler::ansiToUtf8("表头3"),
+		CharsetConvertHepler::ansiToUtf8("表头4"),
+		CharsetConvertHepler::ansiToUtf8("表头5")
+		});
+	excel.writeVectorToFile(fileName, sheetName, data);
+}
+```
+
+![QQ_1724210399098](C:\Users\Luk1\AppData\Local\Temp\QQ_1724210399098.png)
+
+#### 什么时候转码,转成什么码
+
+一般要存进excel中就统一转成`utf8`因为`utf8`兼容性更好,可以保存多种语言的字符.但如果要在控制台打印就必须转回`ANSI`编码,这是控制台的编码集
+
+- **UTF-8**：是一种变长的字符编码，能够表示所有 Unicode 字符集的字符，包括中文字符。UTF-8 是目前互联网上最常用的编码方式，因为它兼容 ASCII 编码，并且对中文字符等非 ASCII 字符的支持良好。
+
+- **ANSI**：是一种较老的编码方式，通常指 Windows 系统中使用的编码（如 CP-1252），它只能表示有限的字符集，主要是英文和一些其他西欧语言字符。对于中文字符，ANSI 编码不够全面，通常需要使用 UTF-8 或其他更现代的编码方式。
+
+### 报表的前后端交互
+
+#### 导入流程
 
 1. 将表格保存到应用服务磁盘的临时文件目录
 2. 使用excel组件从磁盘中将其读到内存中
@@ -1334,7 +1417,7 @@ void TestFastDFS::testDFS()
 5. 保存成功后删除临时目录的报表(磁盘中的)
 6. 保存响应结果
 
-### 导出流程
+#### 导出流程
 
 (有相应的数据查询条件)
 
@@ -1344,11 +1427,1298 @@ void TestFastDFS::testDFS()
 4. 上传报表到FastDFS中
 5. 下发文件下载地址
 
+## 熔断限流
+
+本项目使用了`Sentinel`(alibaba的分布式系统的流量防卫兵)来进行流量控制(但`Sentinel`是java部分的集成在`Spring Cloud`中的),
+
+### 熔断 (Circuit Breaker)
+
+熔断器(Circuit Breaker)是一种保护机制,防止系统中的某一部分故障扩散到整个系统.
+
+- **工作原理:** 
+  1. **关闭状态(closed)**: 正常状态,所有请求都被允许通过,系统会不断监控服务的健康状况
+  2. **打开状态(open)** : 当系统检测到服务的失败率超过预设的阈值时,熔断器会进入打开状态,所有对该服务的请求都会被立刻拒绝.这样可以避免服务继续接受请求,从而减轻服务的压力,给予其恢复时间
+  3. **半开状态(half open)**: 在一定时间后,熔断器会进入半开状态,允许部分请求通过,以测试服务是否已经恢复.如果测试通过,熔断器会重新进入关闭状态,如果任然失败,会再次进入打开状态
+
+- **目的和效果:**
+  - 防止服务器雪崩: 通过阻止对故障服务的请求,避免故障扩散到其他正常服务
+  - 提高系统的可靠性: 通过检测和隔离故障,系统可以继续运行而不是完全崩溃
+  - 给服务恢复时间: 当服务恢复正常后,熔断器会允许部分请求通过,帮助服务逐步恢复
+
+### 限流(Rate Limiting)
+
+**限流**是控制系统中请求处理速率的技术，目的是防止系统因为过多的请求而过载。限流可以通过多种策略实现，比如基于时间窗口的限流、漏桶算法、令牌桶算法等。
+
+- **常见限流算法**
+
+  1. **固定窗口计数器（Fixed Window Counter）**：将时间划分为固定长度的窗口（如每分钟），计算每个窗口内的请求数量。如果请求数量超过限制，拒绝新的请求。
+
+  2. **滑动窗口计数器（Sliding Window Counter）**：对时间窗口进行滑动计算，比固定窗口计数器更精确，能够动态调整请求速率。
+
+  3. **令牌桶（Token Bucket）**：允许突发请求，但在请求流量过高时限制请求速率。请求需要从令牌桶中取令牌，桶中令牌的生成速率限制了请求速率。
+
+  4. **漏桶（Leaky Bucket）**：处理请求流量的平滑算法，将请求排队，然后按照固定速率处理请求。
+
+- **目的和效果**
+
+  - **防止系统过载**：限制系统接受的请求数量，以避免过多的请求导致系统崩溃或性能下降。
+
+  - **提供公平性**：通过限流机制，确保系统资源公平分配给所有请求。
+
+  - **保障服务质量**：防止某一用户或服务滥用资源，影响其他用户的体验。
+
+### 熔断与限流的结合
+
+在实际应用中，熔断和限流通常一起使用，以提供综合的系统保护措施。例如：
+
+- **限流**可以防止请求量过大导致系统过载，从而减少系统进入熔断状态的频率。
+- **熔断**则在限流机制失效或系统异常时，提供额外的保护，防止系统进一步崩溃。
+
+## 声明式服务
 
 
-## 生成式服务
+
+## WebSocket
+
+**连接WebSocket的静态库**
+
+```sh
+# oatpp websocket
+oatpp-websocket.lib (Debug 和 Release都是这个库)
+```
+
+**在预处理中定义宏 `HTTP_SERVER_DEMO`**
+
+### ![QQ_1724301185970](C:\Users\Luk1\AppData\Local\Temp\QQ_1724301185970.png)基本架构
+
+```bash
+userlib
+|
+|_ws
+| |_WSController.h				---	封装了WebSocket的相关测试路由
+| |_WSInstanceListener.cpp			
+| |_WSInstanceListener.h		---	该类用于监听连接的 建立 和 断开
+| |_WSListener.cpp
+| |_WSListener.h				---	该类用于监听客户端发送的信息
+```
+
+### 代码详解
+
+#### WSListen
+
+> WSListener.h
+
+```cpp
+#pragma once
+#ifdef HTTP_SERVER_DEMO
+#ifndef _WSLISTENER_H_
+#define _WSLISTENER_H_
+#include "oatpp-websocket/WebSocket.hpp"
+#include "oatpp-websocket/ConnectionHandler.hpp"
+#include <map>
+
+/**
+ * WebSocket侦听器,侦听传入的WebSocket事件
+ */
+class WSListener : public oatpp::websocket::WebSocket::Listener
+{
+private:
+    
+   	//	是一个静态常量字符指针，用于表示日志输出的标签。通常在调试和日志记录时使用，方便定位输出信息的来源
+	static constexpr const char* TAG = "Server_WSListener";
+	// 消息缓冲区 -- 用于暂存从WebSocket接收道德消息数据
+	oatpp::data::stream::BufferOutputStream m_messageBuffer;
+	// 用户ID -- 用于存储当前连接WebSocket的用户ID。每个 WebSocket 连接通常对应一个唯一的用户ID
+	std::string id;
+	// 加入聊天室用户列表 用于维护一个聊天室中的所有WebSocket连接。key是id，value是对应的WebSOcket指针
+	std::map<std::string, const WebSocket*>* conn_pool;
+public:
+	// 获取ID -- 简单的getter方法
+	const std::string& getId();
+	// 构造初始化
+	WSListener(std::string id, std::map<std::string, const WebSocket*>* conn_pool);
+	// 在ping帧上调用	---	当收到WebSocket Ping帧时调用,Ping帧通常用于保持连接的活跃状态,服务器在收到Ping帧后可以发送一个Pong响应
+	void onPing(const WebSocket& socket, const oatpp::String& message) override;
+	// 在pong帧上调用	--- Pong帧通常是对于Ping帧的响应,用于确认连接任然活跃
+	void onPong(const WebSocket& socket, const oatpp::String& message) override;
+	// 在close帧上调用	---	当WebSocket关闭连接时调用,可用来进行清理操作,比如从连接池中移除该连接,或者记录连接关闭的原因和状态码
+	void onClose(const WebSocket& socket, v_uint16 code, const oatpp::String& message) override;
+	// 在每个消息帧上调用。最后一条消息将再次调用，size等于0以指定消息结束
+	void readMessage(const WebSocket& socket, v_uint8 opcode, p_char8 data, oatpp::v_io_size size) override;
+};
+
+#endif // !_WSLISTENER_H_
+
+#endif // HTTP_SERVER_DEMO
+```
+
+> WSListener.cpp
+
+```cpp
+#include "stdafx.h"
+
+#include "WSListener.h"
+#include "StringUtil.h"
+
+//	定义一个锁
+std::mutex listener_mutex;
 
 
+// 获取ID
+const std::string& WSListener::getId() {
+	return this->id;
+}
+// 构造初始化
+WSListener::WSListener(std::string id, std::map<std::string, const WebSocket*>* conn_pool) {
+	this->id = id;
+	this->conn_pool = conn_pool;
+}
+// 在ping帧上调用
+void WSListener::onPing(const WebSocket& socket, const oatpp::String& message) {
+	//	使用该宏输出日志信息,标记为onPing
+    OATPP_LOGD(TAG, "onPing");
+    //	立即发送pong帧作为响应
+	socket.sendPong(message);
+}
+// 在pong帧上调用
+void WSListener::onPong(const WebSocket& socket, const oatpp::String& message)  {
+    //	当接收到WebSocket的pong帧时调用,记录日志
+	OATPP_LOGD(TAG, "onPong");
+}
+// 在close帧上调用
+void WSListener::onClose(const WebSocket& socket, v_uint16 code, const oatpp::String& message) {
+	//	当WebSocket关闭连接时调用,记录关闭的状态码和消息
+	OATPP_LOGD(TAG, "onClose code=%d", code);
+}
+
+// 在每个消息帧上调用。最后一条消息将再次调用，size等于0以指定消息结束
+void WSListener::readMessage(const WebSocket& socket, v_uint8 opcode, p_char8 data, oatpp::v_io_size size) {
+	//	message transfer finished
+	if (size == 0) {
+		//	获取消息数据
+        //	从缓冲区中提取整个消息
+		auto wholeMessage = m_messageBuffer.toString().getValue("");
+        //	将缓冲区清零
+		m_messageBuffer.setCurrentPosition(0);
+        //	记录日志,记录收到的消息
+		OATPP_LOGD(TAG, "onMessage message=%s", wholeMessage.c_str());
+		//	解析消息 => ID::消息内容  -->消息结构 
+		std::vector<std::string> msgs = StringUtil::split(wholeMessage.c_str(), "::");
+		//	群发消息ID=all表示群发
+		if ("all" == msgs[0]) {
+			std::lock_guard<std::mutex> guard(listener_mutex);
+			for (auto one : *conn_pool) {
+				//	排除自己
+				if (one.second == &socket) {
+					continue;
+				}
+				//	发送消息
+				one.second->sendOneFrameText(msgs[1]);
+			}
+		}
+		//	指定发送
+		else {
+			//	因为要使用conn_pool因此要加锁
+			std::lock_guard<std::mutex> guard(listener_mutex);
+			//	找iter是否存在
+			auto iter = conn_pool->find(msgs[0]);
+			//	如果存在则发送信息
+			if (iter != conn_pool->end()) {
+				iter->second->sendOneFrameText(msgs[1]);
+			}
+			socket.sendOneFrameText("message send success");
+		}
+	}
+	//	 消息帧接收中 此时就单纯将数据写入缓冲区
+	else if (size>v_int64(0)) {
+		m_messageBuffer.writeSimple(data, v_buff_size(size));
+	}	
+}
+```
+
+#### WSInstanceListener
+
+> WSInstanceListener.h
+
+```cpp
+#ifdef HTTP_SERVER_DEMO
+#ifndef _WSINSTANCELISTENER_H_
+#define _WSINSTANCELISTENER_H_
+#include "oatpp-websocket/ConnectionHandler.hpp"
+#include <map>
+
+/**
+ * 定义示例WS实例监听器
+ */
+class WSInstanceListener : public oatpp::websocket::ConnectionHandler::SocketInstanceListener
+{
+private:
+    //	用于日志输出,标志日志的来源
+	static constexpr const char* TAG = "Server_WSInstanceListener";
+public:
+	//	一个原子变量,用来记录当前连接WebSocket的客户端的数量. 原子变量可以保证再多线程环境下操作的安全性,防止竞态条件发生
+	static std::atomic<v_int32> SOCKETS;
+	// 定义一个连接对象池 -- 来管理活跃的连接
+	std::map<std::string, const WebSocket*> conn_pool;
+	// 定义一个锁对象 -- 用于保护对连接池的访问
+	std::mutex instance_mutex;
+public:
+	// 当socket实例创建时调用 -- 定义新连接的初始化操作
+	void onAfterCreate(const WebSocket& socket, const std::shared_ptr<const ParameterMap>& params) override;
+	// 当socket实例销毁前调用 -- 在连接销毁前执行清理动作
+	void onBeforeDestroy(const WebSocket& socket) override;
+};
+
+#endif // !_WSINSTANCELISTENER_H_
+#endif // HTTP_SERVER_DEMO
+```
+
+> WSInstanceListener.cpp
+
+```cpp
+#include "stdafx.h"
+
+#ifdef HTTP_SERVER_DEMO
+#include "WSInstanceListener.h"
+#include "WSListener.h"
+#include <memory>
+
+//	静态原子计数器 初始化为0
+std::atomic<v_int32> WSInstanceListener::SOCKETS(0);
+//							socket -- 新建立的连接对象 				params -- 连接建立时传递的参数,一般包含客户端的id
+void WSInstanceListener::onAfterCreate(const WebSocket& socket, const std::shared_ptr<const ParameterMap>& params)
+{
+	// 获取客户端ID
+	std::string id = params->at("id")->c_str();
+	// 判断客户端对象是否存在
+	std::lock_guard<std::mutex> guard(instance_mutex);
+	if (conn_pool.find(id) != conn_pool.end()) {
+		// 服务器会拒绝新的连接 并关闭socket
+		socket.sendClose(9999, u8"reason id has been used");
+		OATPP_LOGD(TAG, "New Incoming Connection. Connection has been refuse.");
+		return;
+	}
+
+	// 添加到连接池中
+	conn_pool.insert(std::make_pair(id, &socket));
+	OATPP_LOGD(TAG, "client(%s): open connection", id.c_str());
+
+	// 连接数量计数
+	SOCKETS++;
+	OATPP_LOGD(TAG, "New Incoming Connection. Connection count=%d", SOCKETS.load());
+
+	// 添加消息处理监听器
+	socket.setListener(std::make_shared<WSListener>(id, &conn_pool));
+}
+
+void WSInstanceListener::onBeforeDestroy(const WebSocket& socket)
+{
+	auto peer = std::static_pointer_cast<WSListener>(socket.getListener());
+	if (peer)
+	{
+		// 获取客户端ID
+		std::string id = peer->getId();
+
+		// 处理客户端移除
+		OATPP_LOGD(TAG, "client(%s): close connection", id.c_str());
+
+		// 将连接对象从map中移除
+		std::lock_guard<std::mutex> guard(instance_mutex);
+		conn_pool.erase(id);
+		socket.setListener(nullptr);
+
+		// 连接数量计数
+		SOCKETS--;
+		OATPP_LOGD(TAG, "Connection closed. Connection count=%d", SOCKETS.load());
+	}
+}
+
+#endif // HTTP_SERVER_DEMO
+```
+
+#### WSController
+
+> WSController.h
+
+```cpp
+#pragma once
+#ifndef _WS_CONTROLLER_H_
+#define _WS_CONTROLLER_H_
+
+#include "ApiHelper.h"
+#include "oatpp-websocket/Handshaker.hpp"
+
+#include OATPP_CODEGEN_BEGIN(ApiController)
+
+//	测试WebSocket 访问端点创建
+class WSController : public oatpp::web::server::api::ApiController {
+	API_ACCESS_DECLARE(WSController);
+private:
+    //	取出一个名为websocket的组件用于管理WebSocket服务
+	OATPP_COMPONENT(std::shared_ptr<oatpp::network::ConnectionHandler>, websocketConnectionHandler, "websocket");
+public:
+    //	这个端点主要用于处理WebSocket的握手请求				//	请求信息会被该宏解析然后放在request中
+	ENDPOINT(API_M_GET, "chat", chat, REQUEST(std::shared_ptr<IncomingRequest>, request)) {
+        //	该方法用于执行WebSocket的服务器端握手操作,他接受请求头,和组件,并返回一个响应对象
+		auto response = oatpp::websocket::Handshaker::serversideHandshake(request->getHeaders(), websocketConnectionHandler);
+        //	创建一个ParameterMap对象 并将请求中的id参数放入其中,这个id参数通常用于识别客户端
+		auto parameters = std::make_shared<oatpp::network::ConnectionHandler::ParameterMap>();
+		(*parameters)["id"] = request->getQueryParameter("id");
+        //	使用该方法将参数附加到响应中,以便在升级连接中使用这些参数
+		response->setConnectionUpgradeParameters(parameters);
+        //	返回响应对象,完成WebSocket握手
+		return response;
+	}
+};
+
+#include OATPP_CODEGEN_END(ApiController)
+#endif // !_WS_CONTROLLER_H_
+```
+
+### 封装的开闭原则
+
+**开闭原则(Open/Closed Principle,OCP)**
+
+​		其要求一个软件实体(类,模块,函数等)应该对扩展开放,对修改关闭.
+
+**如何通过封装实现开闭原则**
+
+1. **接口和抽象类**：
+   - 通过定义接口或抽象类，将通用行为抽象出来，使具体实现类可以继承或实现这些接口。
+   - 当需要扩展功能时，可以新增实现类，而不需要修改原有的代码。
+2. **依赖倒置**：
+   - 高层模块不应该依赖于低层模块，二者都应该依赖于抽象。通过依赖接口或抽象类，业务逻辑与具体实现解耦。
+   - 当需要修改某个功能时，可以通过提供新的实现类，而不需要改变高层模块。
+3. **策略模式**：
+   - 通过定义一系列算法，将它们封装到独立的类中，并使它们可以互相替换。这样，当需要扩展新的算法时，只需新增一个策略类，而不需要修改现有代码。
+4. **模板方法模式**：
+   - 在一个方法中定义算法的骨架，而将一些步骤延迟到子类中实现。通过继承和重写，可以在不改变算法结构的情况下扩展新的功能。
+
+**示例**
+
+假设你在封装一个支付系统，初始版本只有信用卡支付功能。你可以通过以下方式来遵循开闭原则：
+
+```cpp
+// 抽象支付接口
+class PaymentProcessor {
+public:
+    virtual void processPayment(double amount) = 0;
+    virtual ~PaymentProcessor() = default;
+};
+
+// 信用卡支付实现
+class CreditCardProcessor : public PaymentProcessor {
+public:
+    void processPayment(double amount) override {
+        // 信用卡支付逻辑
+        std::cout << "Processing credit card payment: " << amount << std::endl;
+    }
+};
+
+// 支付上下文，依赖于抽象类
+class PaymentContext {
+private:
+    PaymentProcessor* processor;
+public:
+    PaymentContext(PaymentProcessor* p) : processor(p) {}
+    void pay(double amount) {
+        processor->processPayment(amount);
+    }
+};
+
+// 现在你要扩展添加新的支付方式，比如 PayPal
+class PayPalProcessor : public PaymentProcessor {
+public:
+    void processPayment(double amount) override {
+        // PayPal 支付逻辑
+        std::cout << "Processing PayPal payment: " << amount << std::endl;
+    }
+};
+```
+
+在上面的例子中，当需要扩展新的支付方式（如 PayPal）时，只需要添加一个新的 `PayPalProcessor` 类，而无需修改原有的 `PaymentProcessor` 接口或 `PaymentContext` 类的代码，这就实现了对扩展开放、对修改关闭的设计
+
+## 消息中间件
+
+![image-20240822130407821](C:\Users\Luk1\AppData\Roaming\Typora\typora-user-images\image-20240822130407821.png)
+
+但在本次项目中,采用了alibaba的`RocketMQ`.(实际上这个中间件跟Java生态更适配)
+
+### TestRocket
+
+> TestRocket.h
+
+```cpp
+ifndef _TESTROCKET_H_
+#define _TESTROCKET_H_
+#include "RocketClient.h" //引入客户端操作
+#include <memory>		//引入智能指针
+
+/**
+ * 测试RocketMQ
+ */
+class TestRocket : public RocketClient::RConsumerListener	//	消费者监听器,它可以接受和处理ROcketMQ的消息
+{
+private:
+	std::shared_ptr<RocketClient> client;					//	负责管理client的生命周期
+	std::shared_ptr<RocketClient::RSendCallback> cb;		//	用于处理消息发送的回调函数的智能指针
+public:
+	TestRocket();
+	~TestRocket();
+	void testRocket();
+	void receiveMessage(std::string payload) override;		//	负责接收和处理消息.payload是接收到的消息内容
+};
+#endif // _TESTROCKET_H_
+```
+
+> TestRocket.cpp
+
+````cpp
+#include "stdafx.h"
+#include "TestRocket.h"
+#include "domain/dto/sample/SampleDTO.h"
+#include <iostream>
+
+
+//	构造函数 先置空处理
+TestRocket::TestRocket() {
+	this->client = nullptr;
+	this->cb = nullptr;
+}
+//	析构函数
+TestRocket::~TestRocket() {
+	// 检查客户端是否存在,如果存在则取消订阅 确保客户端资源正确释放,因为是共享指针因此不用管
+    if (client) {
+		client->unsubscribe();
+	}
+}
+
+void TestRocket::testRocket() {
+	//	创建客户端
+	client = make_shared<RocketClient>("192.168.136.132:9876");
+	//	创建发送回调函数   用于在发送信息后处理发送状态 
+	cb = make_shared<RocketClient::RSendCallback>([](SendStatus status)
+		{
+			std::cout << "RSendCallback send status: " << status << endl;
+		});
+	//	测试开始订阅
+    //	订阅hello主题
+	client->subscribe("hello");
+    //	绑定监听器是自己
+	client->addListener(this);
+	//	定义消费对象
+	auto dto = SampleDTO::createShared();
+	dto->name = "cat";
+	dto->sex = "man";
+	dto->age = 10;
+	//	发送消息
+	dto->id = 1;
+    //	异步发送 调用cb处理结果
+	RC_PUBLISH_OBJ_MSG_ASYNC(client, "hello", dto, cb.get());
+	dto->id = 2;
+    //	异步发送 不处理结果
+	RC_PUBLISH_OBJ_MSG_ASYNC(client, "hello", dto, nullptr);
+	dto->id = 3;
+    //	同步发送 并将结果存储在res1中
+	RC_PUBLISH_OBJ_MSG_SYNC(res1, client, "hello", dto);
+	std::cout << "sync send result: " << res1 << endl;
+}
+void TestRocket::receiveMessage(std::string payload) {
+    //	用于将payload转化成dto (反序列化) json -> dto
+	RC_RECEIVER_MSG_CONVERT(dto, SampleDTO, payload);
+    //	拼接输出到控制台
+	std::cout << "receivedMessage: " << dto->id.getValue(-1)
+		<< "-" << dto->name.getValue("")
+		<< "-" << dto->sex.getValue("")
+		<< "-" << dto->age.getValue(0)
+		<< endl;
+}
+````
+
+
+
+## 权限认证
+
+采用了RBAC(Role-Based Access Control)的模式
+
+### API_ACCESS_DECLARE
+
+```CPP
+ /**
+ * 控制器类访问定义，用于绑定授权处理器和类创建入口函数
+ * @param __CLASS__: controller类名称
+ */
+#define API_ACCESS_DECLARE(__CLASS__) \
+public: \
+//	每一个Controller类的构造函数 在初始化列表用objectMapper组件初始化了ApiController 同时在函数实现中 设置了默认的权限处理器
+__CLASS__(OATPP_COMPONENT(std::shared_ptr<ObjectMapper>, objectMapper)) : //
+oatpp::web::server::api::ApiController(objectMapper) { \
+    //	这意味着每当这个控制器处理请求时，都会先经过这个授权处理器，确保请求是经过授权的
+	setDefaultAuthorizationHandler(std::make_shared<CustomerAuthorizeHandler>()); \
+} \
+//	创建了一个静态的工厂方法来创建控制器类的实例。同样接收一个objectMapper组件来初始化该类
+static std::shared_ptr<__CLASS__> createShared(OATPP_COMPONENT(std::shared_ptr<ObjectMapper>, objectMapper)) { \
+	return std::make_shared<__CLASS__>(objectMapper); \
+}
+```
+
+### TestToken
+
+> TestToken.h
+
+```cpp
+#pragma once
+#ifndef _TEST_TOKEN_H_
+#define _TEST_TOKEN_H_
+
+//	测试JWT Token
+class TestToken
+{
+public:
+	static void generateToken();
+};
+
+#endif // !_TEST_TOKEN_H_
+
+```
+
+> TestToken.cpp
+
+```cpp
+#include "stdafx.h"
+#include "TestToken.h"
+#include "JWTUtil.h"
+#include <iostream>
+
+void TestToken::generateToken()
+{
+    //	实例化对象 -- 一个存储 JWT 负载数据的DTO
+	PayloadDTO p;
+    //	向 authorities 容器中添加权限
+	p.getAuthorities().push_back("SUPER_ADMIN");
+    //	设置用户名
+	p.setUsername(u8"roumiou");
+	//	设置用户编号
+    p.setId("1");
+    //	设置凭证有效时常为 3600(1h) * 30 = 30h
+	p.setExp(3600 * 30);
+    //	打印 JWT
+	std::cout << JWTUtil::generateTokenByRsa(p, RSA_PRIV_KEY->c_str()) << std::endl;
+}
+```
+
+#### JWT是什么?
+
+**JWT(Json Web Token)** 是一种用于安全的传输信息的开放标准(RFC 7519).他被广泛的用于身份验证和信息交换.JWT通常用于以下几种场景
+
+1. **身份验证**
+
+   JWT可以在用户登录后生成,并在用户后续请求中传递,以验证用户身份,服务器可以使用JWT来确认用户的身份和权限
+
+2. **信息交换**
+
+   JWT可以用于在各方之间安全的传输信息,因为JWT可以签名以验证信息的完整性
+
+#### RSA 私钥和公钥及其在 JWT 中的作用
+
+**RSA（Rivest-Shamir-Adleman）** 是一种常用的非对称加密算法，它使用一对密钥：私钥和公钥。
+
+1. **RSA 私钥**：用于签名 JWT。只有持有私钥的一方能够创建有效的签名。
+   - 在 JWT 签名过程中，JWT 的头部和负载会被编码成字符串，然后使用 RSA 私钥对这些数据进行加密，生成签名部分。
+   - 这个签名可以保证 JWT 的内容在传输过程中未被篡改，因为只有对应的私钥可以生成有效的签名。
+2. **RSA 公钥**：用于验证 JWT 的签名。持有公钥的一方可以使用它来检查 JWT 的签名是否有效，从而确认 JWT 的内容是否可信。
+   - 在验证过程中，接收方使用 RSA 公钥对 JWT 的签名进行解密，得到签名的原始数据，然后与 JWT 的头部和负载重新计算的签名进行比较。如果两者匹配，则证明 JWT 的内容没有被篡改。
+
+### PayLoadDTO
+
+> PayloadDTO.h
+
+```cpp
+#ifndef _PAYLOADDTO_H_
+#define _PAYLOADDTO_H_
+#include "jwt/jwt.hpp"
+
+/**
+ * 负载信息获取状态编码
+ */
+enum class PayloadCode
+{
+	// 信息验证处理成功
+	SUCCESS,
+	// Token已过期
+	TOKEN_EXPIRED_ERROR,
+	// 签名格式错误
+	SIGNATUREFORMAT_ERROR,
+	// 解密错误
+	DECODE_ERROR,
+	// 验证错误
+	VERIFICATION_ERROR,
+	// 其他错误
+	OTHER_ERROR
+};
+
+/**
+ * 负载信息实体类
+ */
+class PayloadDTO
+{
+public:
+	// 获取状态码对应的枚举值名称
+	static std::string getCodeName(PayloadCode code) 
+	{
+		switch (code)
+		{
+		case PayloadCode::SUCCESS:
+			return "SUCCESS";
+		case PayloadCode::TOKEN_EXPIRED_ERROR:
+			return "TOKEN_EXPIRED_ERROR";
+		case PayloadCode::SIGNATUREFORMAT_ERROR:
+			return "SIGNATUREFORMAT_ERROR";
+		case PayloadCode::DECODE_ERROR:
+			return "DECODE_ERROR";
+		case PayloadCode::VERIFICATION_ERROR:
+			return "VERIFICATION_ERROR";
+		case PayloadCode::OTHER_ERROR:
+			return "OTHER_ERROR";
+		default:
+			return "NONE";
+		}
+	}
+private:
+	// 主体数据
+	std::string sub;
+	// 凭证有效时长（秒）
+	int64_t exp;
+	// 用户编号
+	std::string id;
+	// 用户名
+	std::string username;
+	// 用户拥有的权限
+	std::list<std::string> authorities;
+	// 数据状态系信息
+	PayloadCode code;
+public:
+    //	构造函数 初始化为相关值
+	PayloadDTO()
+	{
+		this->username = "";
+		this->exp = 0;
+		this->sub = "";
+		this->setCode(PayloadCode::SUCCESS);
+	}
+    //	有参构造
+	PayloadDTO(std::string _sub, int64_t _exp, std::string _username, std::list<std::string> _authorities) :
+		sub(_sub), exp(_exp), username(_username), authorities(_authorities)
+	{
+		this->setCode(PayloadCode::SUCCESS);
+	}
+	
+	// getter/setter
+	std::string getSub() const { return sub; }
+	void setSub(std::string val) { sub = val; }
+	int64_t getExp() const { return exp; }
+	void setExp(int64_t val) { exp = val; }
+	std::string getUsername() const { return username; }
+	void setUsername(std::string val) { username = val; }
+	std::list<std::string>& getAuthorities() { return authorities; }
+	void setAuthorities(std::list<std::string> val) { authorities = val; }
+	PayloadCode getCode() const { return code; }
+	void setCode(PayloadCode val) { code = val; }
+	std::string getId() const { return id; }
+	void setId(std::string val) { id = val; }
+
+	// 添加权限
+	void putAuthority(std::string authstr) { authorities.push_back(authstr); }
+	
+	// 将Payload的属性转换到jwt_object中
+	// 注意：新增属性字段后需要维护此方法
+	template<class T>
+	void propToJwt(T* obj) const
+	{
+		// 转换权限列表
+		obj->add_claim("authorities", authorities);
+		// 转换用户名
+		obj->add_claim("user_name", username);
+		// 转换id
+		obj->add_claim("id", id);
+		// TIP：新增字段在后面补充即可
+	}
+
+	// 将jwt_object的属性转换到Payload中
+	// 注意：新增属性字段后需要维护此方法 -- 这里的porp是指 properties(属性)
+	void propToPayload(jwt::jwt_object* obj) 
+	{
+		// 获取负载信息
+		auto payload = obj->payload();
+		auto _payload = payload.create_json_obj();
+
+		// 转换权限列表
+		if (_payload.contains("authorities"))
+			setAuthorities(payload.get_claim_value<std::list<std::string>>("authorities"));
+		// 转换用户名
+		setUsername(payload.get_claim_value<std::string>("user_name"));
+		// 转换数字类型id
+		if (_payload["id"].is_number()) 
+			setId(std::to_string(_payload["id"].get<int64_t>()));
+		// 转换字符串类型id
+		else
+			setId(_payload["id"].get<std::string>());
+		// TIP：新增字段在后面补充即可
+	}
+};
+
+#endif // !_PAYLOADDTO_H_
+```
+
+### SystemInterceptor
+
+#### 系统拦截器
+
+这个是主要用于拦截请求和响应的组件.
+
+- 是指在请求到达Controller之前,或者响应返回给客户端之前执行的特定的逻辑的组件.
+  - **权限认证和授权**：在请求到达控制器之前，拦截器可以检查当前请求是否包含有效的 JWT Token（或其他形式的认证信息）。如果没有，拦截器可以直接阻止请求的继续执行，并返回未授权的响应。
+  - **请求日志记录**：记录所有进入系统的请求信息，如请求的路径、参数、用户信息等，以便日后追踪和分析。
+  - **全局异常处理**：拦截器可以在响应返回给客户端之前，捕获异常并处理，保证系统在异常情况下仍能返回合适的响应。
+  - **修改请求/响应**：拦截器可以在请求到达控制器之前或响应返回给客户端之前，修改请求或响应的数据。
+
+##### 网关和拦截器对于权限认证的区别
+
+**网关的职责**:
+
+- 认证：验证用户的身份，例如解析和验证 JWT Token。
+- 授权：检查用户是否有权限访问特定的服务或 API。
+- 路由：将请求转发到正确的微服务或应用程序。
+- 负载均衡：分配请求到不同的服务实例以实现高可用性。
+- 限流和监控：防止恶意请求，并监控流量。
+
+**拦截器的职责**:
+
+- 进一步的权限控制：在服务内部根据具体的业务逻辑进一步检查用户的权限，例如用户是否有权限执行特定操作。
+- 业务相关的请求处理：如请求参数校验、日志记录、异常处理等。
+
+**网关的权限认证**适用于**全局统一**的权限控制，尤其是在微服务架构中，网关作为统一入口，能够有效减少各个服务重复实现认证逻辑的开销。
+
+**拦截器的权限认证**适用于**服务内部**的细粒度权限控制。例如，一个用户即使通过了网关的认证，当他访问特定的服务或 API 时，拦截器可以进一步检查他是否有访问该特定资源的权限。
+
+#### 源码
+
+> SystemInterceptor.h
+
+```cpp
+#ifndef _SYSTEMINTERCEPTOR_H_
+#define _SYSTEMINTERCEPTOR_H_
+#include "oatpp/web/server/interceptor/RequestInterceptor.hpp"
+#include "oatpp/web/server/interceptor/ResponseInterceptor.hpp"
+
+/**
+ * 跨域请求拦截器
+ */
+class CrosRequestInterceptor : public oatpp::web::server::interceptor::RequestInterceptor
+{
+public:
+	// 拦截器执行逻辑
+	std::shared_ptr<OutgoingResponse> intercept(const std::shared_ptr<IncomingRequest>& request) override;
+/*
+	这是拦截器的核心方法用于拦截和处理传入的http请求
+	在这个方法中,你可以对请求进行检查和修改,或者阻止请求继续传递
+	在跨域请求的上下文中,这个拦截器通常用于处理 CORS 相关的请求头,确保客户端能够合法的跨域访问资源
+*/
+};
+
+/**
+ * 跨域响应拦截器
+ */
+class CrosResponseInterceptor : public oatpp::web::server::interceptor::ResponseInterceptor {
+public:
+	// 拦截器执行逻辑
+	std::shared_ptr<OutgoingResponse> intercept(const std::shared_ptr<IncomingRequest>& request, const std::shared_ptr<OutgoingResponse>& response) override;
+/*
+	这是响应拦截器的核心方法,用于拦截和处理传出的http响应
+	该方法允许在相应发送给客户端之前,对其进行检查和修改.
+	对于跨域请求,通常在这里添加CORS响应头,如`Access-Control-Allow-Origin`等,以便语序跨域资源共享
+*/
+}
+
+/**
+ * 校验凭证请求拦截器
+ */
+class CheckRequestInterceptor : public oatpp::web::server::interceptor::RequestInterceptor
+{
+private:
+	// DTO序列化对象 一个映射器 因为在检验请求时拦截器可能需要在请求中解析数据,因此要用到
+	std::shared_ptr<oatpp::data::mapping::ObjectMapper> m_objectMapper;
+public:
+	// 构造的时候传入数据序列化对象
+	explicit CheckRequestInterceptor(const std::shared_ptr<oatpp::data::mapping::ObjectMapper>& objectMapper);
+	// 拦截器执行逻辑
+	std::shared_ptr<OutgoingResponse> intercept(const std::shared_ptr<IncomingRequest>& request) override;
+/*
+	这是请求拦截器的核心方法,用于拦截和处理传入的http请求
+	该方法可以用来校验请求中是否包含有效的凭证或认证信息
+	如果校验失败,拦截器可以直接返回一个错误响应,组织请求继续处理
+*/
+};
+
+
+#endif // !_SYSTEMINTERCEPTOR_H_
+```
+
+>SystemInterceptor.cpp
+
+```cpp
+#ifndef CHECK_TOKEN
+// 开启凭证检查，解开下一行注释即可
+#define CHECK_TOKEN
+#endif
+
+// 定义一个临时凭证
+std::unique_ptr<std::string> TMP_TOKEN = nullptr;
+
+// 测试负载数据初始化
+#define TEST_PAYLOAD_INIT \
+PayloadDTO payload; \
+payload.setExp(3600 * 30); \
+payload.setId("1"); \
+payload.setUsername(u8"admin"); \
+payload.putAuthority("ADMIN"); \
+payload.putAuthority("TEST"); \
+TMP_TOKEN = std::make_unique<std::string>("Bearer " + JWTUtil::generateTokenByRsa(payload, RSA_PRIV_KEY->c_str()));
+
+// 跨域属性设置 -- 添加跨域相关的 HTTP 头
+#define CROS_FIELD_SETTING(__RES__) \
+__RES__->putHeaderIfNotExists("Access-Control-Allow-Origin", "*"); \
+__RES__->putHeaderIfNotExists("Access-Control-Allow-Methods", "*"); \
+__RES__->putHeaderIfNotExists("Access-Control-Expose-Headers", "*"); \
+__RES__->putHeaderIfNotExists("Access-Control-Allow-Credentials", "true"); \
+__RES__->putHeaderIfNotExists("Access-Control-Allow-Headers", "Content-Type,Access-Token");
+//	Access-Control-Allow-Origin , * -> 允许所有源访问
+//	Access-Control-Allow-Method , * -> 允许所有方法
+
+std::shared_ptr<oatpp::web::server::interceptor::RequestInterceptor::OutgoingResponse> CrosRequestInterceptor::intercept(const std::shared_ptr<IncomingRequest>& request)
+{
+#ifndef CLOSE_CROS_SUPPORT
+	//	从请求中提取方法
+	auto method = request->getStartingLine().method;
+	//	如果是 OPTIONS那就返回resp
+	if (method == "OPTIONS")
+	{
+		//	创建响应实体同时添加跨域相关的头
+		auto res = OutgoingResponse::createShared(Status::CODE_200, nullptr);
+		CROS_FIELD_SETTING(res)
+		return res;
+	}
+#endif
+	//	如果关闭了跨域支持那就返回空指针
+	return nullptr;
+}
+
+std::shared_ptr<oatpp::web::server::interceptor::ResponseInterceptor::OutgoingResponse> CrosResponseInterceptor::intercept(const std::shared_ptr<IncomingRequest>& request, const std::shared_ptr<OutgoingResponse>& response)
+{
+#ifndef CLOSE_CROS_SUPPORT
+	CROS_FIELD_SETTING(response)
+#endif
+	return response;
+}
+
+std::shared_ptr<Response> createErrorRespone(std::string message, std::shared_ptr<oatpp::data::mapping::ObjectMapper> mapper) {
+	auto error = NoDataJsonVO::createShared();
+	error->init(RS_UNAUTHORIZED);
+	error->message = message;
+	auto response = ResponseFactory::createResponse(Status::CODE_200, error, mapper);
+	return response;
+}
+
+CheckRequestInterceptor::CheckRequestInterceptor(const std::shared_ptr<oatpp::data::mapping::ObjectMapper>& objectMapper)
+{
+	m_objectMapper = objectMapper;
+#ifndef CHECK_TOKEN
+	// 初始化一个凭证
+	TEST_PAYLOAD_INIT
+#endif
+}
+
+std::shared_ptr<oatpp::web::server::interceptor::RequestInterceptor::OutgoingResponse> CheckRequestInterceptor::intercept(const std::shared_ptr<IncomingRequest>& request)
+{
+	auto path = request->getStartingLine().path.toString().getValue("");
+	auto method = request->getStartingLine().method.toString().getValue("");
+	auto protocol = request->getStartingLine().protocol.toString().getValue("");
+	//	记录日志
+	OATPP_LOGD("Interceptor", "%s:%s->%s", protocol.c_str(), method.c_str(), path.c_str());
+	// Swagger文档与关闭服务器请求不拦截 (相当于请求的白名单)
+	if (path.find("/chat?") == 0 ||
+		path.find("/swagger/") == 0 || 
+		path.find("/api-docs/") == 0 || 
+		path.find("/system-kill/") == 0)
+	{
+		return nullptr;
+	}
+#ifdef CHECK_TOKEN
+	// 获取请求凭证
+	oatpp::String token = request->getHeader("Authorization");
+	if (!token || token->empty()) {
+		//	如果凭证为空或无效，则返回一个包含错误信息的响应
+		return createErrorRespone("empty token", m_objectMapper);
+	}
+#else
+	request->putHeaderIfNotExists("Authorization", TMP_TOKEN->c_str());
+#endif
+	return nullptr;
+}
+```
+
+#### 跨域是什么?
+
+跨域（Cross-Origin）是指当浏览器中的一个页面发起的请求，其目标地址的域名、协议或端口号与当前页面所在的地址不同。这种跨域请求由于浏览器的同源策略（Same-Origin Policy）会受到限制，以确保安全。
+
+##### **什么是同源策略？**
+
+同源策略是一种浏览器的安全机制，用于防止恶意网站通过代码操作用户在其他网站的内容。根据同源策略，只有当两个页面具有相同的协议、域名和端口号时，它们才被认为是同源的。否则，它们就是跨域的。
+
+- **同源**：`http://example.com/page` 与 `http://example.com/data` 是同源的。
+- **跨域**：`http://example.com/page` 与 `https://example.com/data` 或 `http://api.example.com/data` 是跨域的。
+
+##### **跨域的常见场景**
+
+1. 不同域名：
+   - 例如：`http://example.com` 和 `http://another.com`。
+2. 不同子域名：
+   - 例如：`http://app.example.com` 和 `http://api.example.com`。
+3. 不同协议：
+   - 例如：`http://example.com` 和 `https://example.com`。
+4. 不同端口号：
+   - 例如：`http://example.com:8080` 和 `http://example.com:8081`。
+
+##### **为什么需要跨域？**
+
+在实际应用中，跨域请求是非常常见的。例如：
+
+- 前端页面在 `example.com` 上，可能需要从 `api.example.com` 获取数据。
+- 前端页面使用了CDN资源，这些资源可能来自不同的域名。
+
+### AuthorizationHandler
+
+> AuthorizationHandler.h
+
+```cpp
+#ifndef _CUSTOMERAUTHORIZEHANDLER_H_
+#define _CUSTOMERAUTHORIZEHANDLER_H_
+#include "oatpp/web/server/handler/AuthorizationHandler.hpp"
+#include "JWTUtil.h"
+
+/**
+ * 自定义授权实体数据实体
+ */
+class CustomerAuthorizeObject : public oatpp::web::server::handler::AuthorizationObject
+{
+private:
+	// 负载数据记录实体
+	PayloadDTO payload;
+public:
+	// 构造初初始化
+	CustomerAuthorizeObject(PayloadDTO payload);
+	// 获取负载数据对象
+	const PayloadDTO& getPayload();
+};
+
+/**
+ * 自定义授权处理器
+ */
+class CustomerAuthorizeHandler : public oatpp::web::server::handler::BearerAuthorizationHandler
+{
+public:
+	// 构造初始化公钥读取
+	CustomerAuthorizeHandler();
+	// 授权逻辑
+	std::shared_ptr<AuthorizationObject> authorize(const oatpp::String& token) override;
+};
+
+#endif // _CUSTOMERAUTHORIZEHANDLER_H_
+```
+
+>AuthorizationHandler.cpp
+
+```cpp
+#include "pch.h"
+#include <sstream>
+#include <string>
+#include <iostream>
+#include <fstream>
+#include "../include/CustomerAuthorizeHandler.h"
+
+// std::unique_ptr<std::string> RSA_PUB_KEY = std::make_unique<std::string>(R"(
+// -----BEGIN PUBLIC KEY-----
+// MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2CUog6kdKUOlOtdOHFcs
+// ts0KHt5eg8UPF6Yj/jte7jgxOWsYB571rdMzTDIYo1UIaYVOJcd3oio9QlebUZD7
+// O4GL8oJmj9rNCVk60xfx3vhYISzdHbwQhUUgx+YDmDr5UJV/D/uhCdFKziTUBMjD
+// otSQXvCsbWIMGGEFbPXKe9VRmgqtjdNfWvjMa7spQwiy0gj7GeOUiIttkVZna6qF
+// FZRSRAxp3NJ9ELbcW7Kd9u5IFzrvxXNiYPOtIiw+zqJTYsSXUJTI7YQAXy9zqGtT
+// 7QUFUjxUf+7b1DELpGZPmwGd5Jzj+zfTNsS3DRNuPQJPkPbpUo1qCsU55sXgcNrf
+// zwIDAQAB
+// -----END PUBLIC KEY-----)");
+
+// RSA公钥
+std::unique_ptr<std::string> RSA_PUB_KEY = nullptr;
+
+CustomerAuthorizeObject::CustomerAuthorizeObject(PayloadDTO payload)
+{
+	this->payload = payload;
+}
+
+const PayloadDTO& CustomerAuthorizeObject::getPayload()
+{
+	return this->payload;
+}
+
+CustomerAuthorizeHandler::CustomerAuthorizeHandler()
+{
+	//读取公钥
+	if (!RSA_PUB_KEY)
+	{
+		std::string pubKey = "";
+		std::ifstream ifs("public.pem");
+		if (ifs.is_open())
+		{
+			std::string tmp;
+			while (std::getline(ifs, tmp))
+			{
+				pubKey += tmp + "\n";
+			}
+			ifs.close();
+		}
+		RSA_PUB_KEY = std::make_unique<std::string>(pubKey);
+	}
+}
+
+std::shared_ptr<oatpp::web::server::handler::AuthorizationHandler::AuthorizationObject> CustomerAuthorizeHandler::authorize(const oatpp::String& token)
+{
+	// 解析凭证
+	PayloadDTO payload = JWTUtil::verifyTokenByRsa(token, RSA_PUB_KEY->c_str());
+    //	错误处理
+	if (payload.getCode() != PayloadCode::SUCCESS) {
+		std::stringstream ss;
+		ss << "Token: check fail code <" << PayloadDTO::getCodeName(payload.getCode()) << ">.";
+		throw std::logic_error(ss.str());
+	}
+	// 将数据存放到授权对象中
+	return std::make_shared<CustomerAuthorizeObject>(payload);
+}
+
+```
+
+### JWTUtils
+
+> JWTUtils.h
+
+```cpp
+#ifndef _JWT_UTIL_
+#define _JWT_UTIL_
+#include "jwt/jwt.hpp"
+#include <openssl/md5.h>
+#include <list>
+#include <memory>
+#include "domain/dto/PayloadDTO.h"
+using namespace jwt;
+
+/**
+ * JWT工具类
+ */
+class JWTUtil
+{
+private:
+	//对字符串进行MD5处理 -- 对字符串进行md5哈希处理.这个方法在 HMAC 相关的处理的时候可能会用到
+	static std::string md5(const std::string& src);
+public:
+	//************************************
+	// Method:    generateTokenByHmac
+	// FullName:  JWTUtil::generateTokenByHmac
+	// Access:    public static 
+	// Returns:   std::string 返回Token字符串
+	// Qualifier: 使用HMAC算法构建Token
+	// Parameter: const PayloadDTO& payloadDto 负载信息对象
+	// Parameter: const std::string& secretStr 秘钥
+	//************************************
+	static std::string generateTokenByHmac(const PayloadDTO& payloadDto, const std::string& secretStr);
+    
+    
+	//************************************
+	// Method:    verifyTokenByHmac
+	// FullName:  JWTUtil::verifyTokenByHmac
+	// Access:    public static 
+	// Returns:   PayloadDTO 负载信息对象
+	// Qualifier: 验证HMAC签名的 Token
+	// Parameter: const std::string& token Token字符串
+	// Parameter: const std::string& secretStr 秘钥
+	//************************************
+	static PayloadDTO verifyTokenByHmac(const std::string& token, const std::string& secretStr);
+
+	//************************************
+	// Method:    generateTokenByRsa
+	// FullName:  JWTUtil::generateTokenByRsa
+	// Access:    public static 
+	// Returns:   std::string
+	// Qualifier: 使用RSA Pem生成Token，密钥对在线生成工具：http://www.metools.info/code/c80.html
+	// Parameter: const PayloadDTO& payloadDto 负载信息
+	// Parameter: const std::string& rsaPriKey RSA私钥
+	//************************************
+	static std::string generateTokenByRsa(const PayloadDTO& payloadDto, const std::string& rsaPriKey);
+
+	//************************************
+	// Method:    verifyTokenByRsa
+	// FullName:  JWTUtil::verifyTokenByRsa
+	// Access:    public static 
+	// Returns:   PayloadDTO
+	// Qualifier: 验证RSA Pem Token
+	// Parameter: const std::string& token Token字符串
+	// Parameter: const std::string& rsaPubKey RSA公钥
+	//************************************
+	static PayloadDTO verifyTokenByRsa(const std::string& token, const std::string& rsaPubKey);
+};
+
+// 测试RSA私钥
+extern std::unique_ptr<std::string> RSA_PRIV_KEY;
+#endif // !_JWT_UTIL_
+
+```
+
+> JWTUtils.cpp
+
+```cpp
+#include "pch.h"
+#include <iostream>
+#include "JWTUtil.h"
+
+// 定义一个测试RSA私钥
+std::unique_ptr<std::string> RSA_PRIV_KEY = std::make_unique<std::string>(R"(
+-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDYJSiDqR0pQ6U6
+104cVyy2zQoe3l6DxQ8XpiP+O17uODE5axgHnvWt0zNMMhijVQhphU4lx3eiKj1C
+V5tRkPs7gYvygmaP2s0JWTrTF/He+FghLN0dvBCFRSDH5gOYOvlQlX8P+6EJ0UrO
+JNQEyMOi1JBe8KxtYgwYYQVs9cp71VGaCq2N019a+MxruylDCLLSCPsZ45SIi22R
+VmdrqoUVlFJEDGnc0n0Qttxbsp327kgXOu/Fc2Jg860iLD7OolNixJdQlMjthABf
+L3Ooa1PtBQVSPFR/7tvUMQukZk+bAZ3knOP7N9M2xLcNE249Ak+Q9ulSjWoKxTnm
+xeBw2t/PAgMBAAECggEADHXH6h8boT9XDRdQV23nE/qp9LGY/Tuk7RYUyRkfFdiD
+be3wiq/tNcIRGPliVjgWrg6TPLZM/To2IdbvCzqyYPHM4YQG6ZARddKBA55DwTjL
+y83MSWSIB0a+5wcpeeMccDrOAlvdIrW//DY/Sq9QJ9jdIbv6FKwsSlN9fpSEwbKl
+TDqwZJCyc5KBKq7r6NixO/ksATi1uaQUfJT5b4sakGKUN5I7MwAjST4em7Ze8VVc
+HGt1ClaTgLxKfPMurd0Ec+8o/3ex/PkU7Wx8AHqAj/IQsLdNB2arHePpcQVzHjsb
+u4+zJSrtxOzrZlC/qfPObh8+o/i72K556ZfcEFjb8QKBgQDt2qD5sKn592+xtGXX
+rzv/8G1CdE6Zy4WBUl33gov2rbGvmkrAeDGWV7dgTW0fPI9oXhV4Ioc7q61cDp8C
+U9FDjDNpEEhUextq4VFjJWQ2tUvigyTkMFT7dEg1j35jbMGmvNh9jWQzdeM3Rheb
+Q8VVGbZ5i2z4iGpfrDfStUeiiwKBgQDooow36Y5KZtvbnkF+C0nqQ7LC63ZsSBTS
+UQgFWw5sBJssv9DsZIm1Ke14aHZftrDm67mg+/xsrw3+DZxwlaui8zA4PLpmTrGj
+AnJ/2F9En8LZtb/ove+gXuQjZrNUsHh6+OpMWaEC1Flp3+jaPoaKZPp0ta/WYHPi
+OEQ3uvh0TQKBgH0FvjeAtNe/R+aQfDey1EbjiYq0t9v/Ll2bfejrpcYz5oH3B/PD
+Oc1crfbgu8r/eiHR0lcjTxH+W1FYHhyLEiP/Pcar2FkPnInBhZYnwVVAVnLpnCqV
+fRXvOUVt93EraV7LRMA54cFq5dPX8/CY3tCsg03AC7dXfRJs46rNvqmhAoGACyR1
++Nub8B5bG3rKAkKCKNFTR5jFlEwjiytMag1BdJUH5a3OUPRD0ESQ1jqSqOT0NitG
+Odq37XC5B9kZDB9vGB/zyE3IU8wjH/6nA06WyY+pYoodBgXK63CAFt39auoE60bu
+2fdVCfCn07Vgzss94HUTtfFZ2bfG9SfixJSU/+UCgYEAyW1Si7qQRiNUSJWU8Jae
+yFWOL1mvZRpXPUlg70H4wARoJjK6XgNKcE6GWbOedNtyiVJ7b07bmf9YJX2NWOzE
+913vLOeLSlJeJAoQHEoYCM0nnOEcfUMiuOx59R4zk4RzSC64uK9PeguGSS6RaQwQ
+8aj6l5u1SVtUNRb+ZjPCU8c=
+-----END PRIVATE KEY-----)");
+
+#define JU_VERIFY_CATCH(__p__) \
+catch (const jwt::TokenExpiredError& e) { \
+	std::cerr << "TokenExpiredError:" << e.what() << std::endl; \
+	__p__.setCode(PayloadCode::TOKEN_EXPIRED_ERROR); \
+} \
+catch (const jwt::SignatureFormatError& e) { \
+	std::cerr << "SignatureFormatError:" << e.what() << std::endl; \
+	__p__.setCode(PayloadCode::SIGNATUREFORMAT_ERROR); \
+} \
+catch (const jwt::DecodeError& e) { \
+	std::cerr << "DecodeError:" << e.what() << std::endl; \
+	__p__.setCode(PayloadCode::DECODE_ERROR); \
+} \
+catch (const jwt::VerificationError& e) { \
+	std::cerr << "VerificationError:" << e.what() << std::endl; \
+	__p__.setCode(PayloadCode::VERIFICATION_ERROR); \
+} \
+catch (const std::exception& e) { \
+	std::cerr << "OtherError:" << e.what() << std::endl; \
+	__p__.setCode(PayloadCode::OTHER_ERROR); \
+}
+
+std::string JWTUtil::md5(const std::string& src)
+{
+	MD5_CTX ctx;
+	std::string md5_string;
+	unsigned char md[16] = { 0 };
+	char tmp[33] = { 0 };
+	MD5_Init(&ctx);
+	MD5_Update(&ctx, src.c_str(), src.size());
+	MD5_Final(md, &ctx);
+	for (int i = 0; i < 16; ++i)
+	{
+		memset(tmp, 0x00, sizeof(tmp));
+		snprintf(tmp, sizeof(tmp), "%02X", md[i]);
+		md5_string += tmp;
+	}
+	return md5_string;
+}
+
+std::string JWTUtil::generateTokenByHmac(const PayloadDTO& payloadDto, const std::string& secretStr)
+{
+	//1 创建JWT头，设置签名算法和类型
+	jwt_header hdr = jwt_header{ jwt::algorithm::HS256 };
+	//2 将负载信息封装到Payload中
+	jwt::jwt_payload jp;
+	//2.1 呼叫属性转换
+	payloadDto.propToJwt(&jp);
+	//2.2 失效时间在内部处理
+	jp.add_claim("exp", std::chrono::system_clock::now() + std::chrono::seconds{ payloadDto.getExp() });
+	//3 创建HMAC签名器
+	jwt::jwt_signature sgn{ md5(secretStr) };
+	std::error_code ec{};
+	//4 生成token
+	auto res = sgn.encode(hdr, jp, ec);
+	return res;
+}
+
+PayloadDTO JWTUtil::verifyTokenByHmac(const std::string& token, const std::string& secretStr)
+{
+	PayloadDTO p;
+	using namespace jwt::params;
+	try {
+		jwt_object dec_obj = jwt::decode(token, algorithms({ "HS256" }), secret(string_view(md5(secretStr))), verify(true));
+		// 呼叫属性转换
+		p.propToPayload(&dec_obj);
+		// 失效时间在内部处理
+		p.setExp(dec_obj.payload().get_claim_value<int64_t>("exp"));
+	}
+	JU_VERIFY_CATCH(p);
+	return p;
+}
+
+std::string JWTUtil::generateTokenByRsa(const PayloadDTO& payloadDto, const std::string& rsaPriKey)
+{
+	jwt::jwt_object obj;
+	obj.secret(rsaPriKey);
+	obj.header().algo(jwt::algorithm::RS256);
+	// 呼叫属性转换
+	payloadDto.propToJwt(&obj);
+	// 失效时间在内部处理
+	obj.add_claim("exp", std::chrono::system_clock::now() + std::chrono::seconds{ payloadDto.getExp() });
+	return obj.signature();
+}
+
+PayloadDTO JWTUtil::verifyTokenByRsa(const std::string& token, const std::string& rsaPubKey)
+{
+	PayloadDTO p;
+	using namespace jwt::params;
+	try {
+		jwt_object dec_obj = jwt::decode(token, algorithms({ "RS256" }), secret(rsaPubKey), verify(true));
+		// 呼叫属性转换
+		p.propToPayload(&dec_obj);
+		// 失效时间在内部处理
+		p.setExp(dec_obj.payload().get_claim_value<int64_t>("exp"));
+	}
+	JU_VERIFY_CATCH(p);
+	return p;
+}
+```
 
 ## 分层领域规约
 
